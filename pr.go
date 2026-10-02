@@ -81,7 +81,7 @@ func computeDiffBase(provider GitProvider, worktree, srcRepo string, target PRTa
 	}
 	diffBase = "HEAD"
 	var fetchErr string
-	baseRefspec := fmt.Sprintf("refs/heads/%s:refs/px0/base/%d", baseRef, num)
+	baseRefspec := fmt.Sprintf("+refs/heads/%s:refs/px0/base/%d", baseRef, num)
 	baseRemote := "origin"
 	if srcRepo == "" {
 		if provider != nil {
@@ -167,7 +167,11 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 		fetchRemote := "origin"
 		headRefspec := fmt.Sprintf("+refs/pull/%d/head:refs/px0/pr/%d", num, num)
 		if provider != nil && provider.Name() == "bitbucket" {
-			headRefspec = fmt.Sprintf("+refs/heads/%s:refs/px0/pr/%d", meta.HeadRef, num)
+			if meta.HeadRef != "" {
+				headRefspec = fmt.Sprintf("+refs/heads/%s:refs/px0/pr/%d", meta.HeadRef, num)
+			} else if meta.HeadSHA != "" {
+				headRefspec = fmt.Sprintf("+%s:refs/px0/pr/%d", meta.HeadSHA, num)
+			}
 			if meta.HeadIsFork && meta.HeadRepoCloneURL != "" {
 				fetchRemote = meta.HeadRepoCloneURL
 			}
@@ -192,9 +196,20 @@ func checkoutPR(ctx context.Context, provider GitProvider, target PRTarget, cwd 
 				cloneURL = (&GitHubProvider{}).SSHURL(target)
 			}
 		}
-		if out, err := gitAuthCmd("clone", "--filter=blob:none", "--branch", meta.HeadRef, "--single-branch", cloneURL, tmp).CombinedOutput(); err != nil {
+		cloneArgs := []string{"clone", "--filter=blob:none"}
+		if meta.HeadRef != "" {
+			cloneArgs = append(cloneArgs, "--branch", meta.HeadRef, "--single-branch")
+		}
+		cloneArgs = append(cloneArgs, cloneURL, tmp)
+		if out, err := gitAuthCmd(cloneArgs...).CombinedOutput(); err != nil {
 			cleanup()
 			return nil, fmt.Errorf("git clone PR head: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		if meta.HeadRef == "" && meta.HeadSHA != "" {
+			if out, err := exec.Command("git", "-C", tmp, "checkout", "--detach", meta.HeadSHA).CombinedOutput(); err != nil {
+				cleanup()
+				return nil, fmt.Errorf("git checkout PR head SHA: %w: %s", err, strings.TrimSpace(string(out)))
+			}
 		}
 	}
 
@@ -241,7 +256,12 @@ func gitAuthCmd(args ...string) *exec.Cmd {
 	cmd := exec.Command("git", args...)
 	var env []string
 	for _, e := range os.Environ() {
-		if strings.HasPrefix(e, "GITHUB_TOKEN=") || strings.HasPrefix(e, "GIT_CONFIG_KEY_") || strings.HasPrefix(e, "GIT_CONFIG_VALUE_") {
+		if strings.HasPrefix(e, "GITHUB_TOKEN=") ||
+			strings.HasPrefix(e, "BITBUCKET_TOKEN=") ||
+			strings.HasPrefix(e, "GIT_CONFIG_KEY_") ||
+			strings.HasPrefix(e, "GIT_CONFIG_VALUE_") ||
+			strings.HasPrefix(e, "GIT_SSH_COMMAND=") ||
+			strings.HasPrefix(e, "GIT_TERMINAL_PROMPT=") {
 			continue
 		}
 		env = append(env, e)
@@ -711,9 +731,19 @@ func (s *Server) handlePRSubmit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.mu.Lock()
-	p.comments = nil
+	submittedSet := make(map[int64]bool, len(comments))
+	for _, c := range comments {
+		submittedSet[c.ID] = true
+	}
+	remaining := make([]prComment, 0, len(p.comments))
+	for _, c := range p.comments {
+		if !submittedSet[c.ID] {
+			remaining = append(remaining, c)
+		}
+	}
+	p.comments = remaining
 	if s.session != nil {
-		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = nil })
+		s.session.Update(func(ws *WorkspaceSession) { ws.Drafts = remaining })
 	}
 	p.mu.Unlock()
 	writeJSON(w, map[string]any{"ok": true})

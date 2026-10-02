@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -205,67 +206,77 @@ func (b *BitbucketProvider) CheckPushAccess(ctx context.Context, target PRTarget
 		return false
 	}
 
-	path := fmt.Sprintf("/user/workspaces/%s/permissions/repositories", target.Owner)
-	resp, err := bitbucketRequest(ctx, http.MethodGet, path, token, nil)
-	if err != nil {
-		// Treat transport errors as unknown/optimistic write access (e.g. repo access tokens)
-		return true
-	}
-	defer resp.Body.Close()
-
-	// The /user/workspaces/{workspace}/permissions/repositories endpoint returns 401 or 403
-	// for repository-scoped tokens which cannot query workspace permissions.
-	// Optimistic access allows review submission where real API permissions are checked.
-	if resp.StatusCode != http.StatusOK {
-		return true
-	}
-
-	var out struct {
-		Values []struct {
-			Permission string `json:"permission"`
-			Repository struct {
-				FullName string `json:"full_name"`
-				Name     string `json:"name"`
-				Slug     string `json:"slug"`
-			} `json:"repository"`
-		} `json:"values"`
-		Permission string `json:"permission"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
-		return true
-	}
-
 	targetFull := strings.ToLower(fmt.Sprintf("%s/%s", target.Owner, target.Repo))
 	targetRepo := strings.ToLower(target.Repo)
 
-	var matchedPerm string
-	found := false
-	for _, v := range out.Values {
-		fn := strings.ToLower(v.Repository.FullName)
-		nm := strings.ToLower(v.Repository.Name)
-		sl := strings.ToLower(v.Repository.Slug)
-		if fn == targetFull || nm == targetRepo || sl == targetRepo {
-			matchedPerm = strings.ToLower(v.Permission)
-			found = true
-			break
-		}
-	}
-	if !found && len(out.Values) == 1 && out.Values[0].Repository.FullName == "" && out.Values[0].Repository.Name == "" {
-		matchedPerm = strings.ToLower(out.Values[0].Permission)
-		found = true
-	}
-	if !found && out.Permission != "" {
-		matchedPerm = strings.ToLower(out.Permission)
-		found = true
-	}
-
-	if found {
-		if matchedPerm == "write" || matchedPerm == "admin" {
-			return true
-		}
-		if matchedPerm == "read" {
+	nextURL := fmt.Sprintf("/user/workspaces/%s/permissions/repositories?q=repository.slug=%q", target.Owner, target.Repo)
+	// Try query filter first; if nothing returned or endpoint unsupported, try paginated workspace list
+	for attempts := 0; attempts < 10 && nextURL != ""; attempts++ {
+		resp, err := bitbucketRequest(ctx, http.MethodGet, nextURL, token, nil)
+		if err != nil {
 			return false
 		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			if attempts == 0 && (resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusNotFound) {
+				nextURL = fmt.Sprintf("/user/workspaces/%s/permissions/repositories", target.Owner)
+				continue
+			}
+			return false
+		}
+
+		var out struct {
+			Values []struct {
+				Permission string `json:"permission"`
+				Repository struct {
+					FullName string `json:"full_name"`
+					Name     string `json:"name"`
+					Slug     string `json:"slug"`
+				} `json:"repository"`
+			} `json:"values"`
+			Permission string `json:"permission"`
+			Next       string `json:"next"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if err != nil {
+			return false
+		}
+
+		var matchedPerm string
+		found := false
+		for _, v := range out.Values {
+			fn := strings.ToLower(v.Repository.FullName)
+			nm := strings.ToLower(v.Repository.Name)
+			sl := strings.ToLower(v.Repository.Slug)
+			if fn == targetFull || nm == targetRepo || sl == targetRepo {
+				matchedPerm = strings.ToLower(v.Permission)
+				found = true
+				break
+			}
+		}
+		if !found && len(out.Values) == 1 && out.Values[0].Repository.FullName == "" && out.Values[0].Repository.Name == "" {
+			matchedPerm = strings.ToLower(out.Values[0].Permission)
+			found = true
+		}
+		if !found && out.Permission != "" {
+			matchedPerm = strings.ToLower(out.Permission)
+			found = true
+		}
+
+		if found {
+			if matchedPerm == "write" || matchedPerm == "admin" {
+				return true
+			}
+			return false
+		}
+
+		if attempts == 0 && strings.Contains(nextURL, "?q=") && len(out.Values) == 0 {
+			nextURL = fmt.Sprintf("/user/workspaces/%s/permissions/repositories", target.Owner)
+			continue
+		}
+
+		nextURL = out.Next
 	}
 
 	return false
@@ -335,12 +346,12 @@ func (c bitbucketCommentItem) toPRComment() PRComment {
 	if c.Inline != nil {
 		prc.Kind = "review"
 		prc.Path = c.Inline.Path
-		if c.Inline.From != nil {
-			prc.Side = "LEFT"
-			prc.Line = *c.Inline.From
-		} else if c.Inline.To != nil {
+		if c.Inline.To != nil {
 			prc.Side = "RIGHT"
 			prc.Line = *c.Inline.To
+		} else if c.Inline.From != nil {
+			prc.Side = "LEFT"
+			prc.Line = *c.Inline.From
 		}
 	} else if c.Parent != nil && c.Parent.ID != 0 {
 		prc.Kind = "review"
@@ -559,12 +570,12 @@ func (b *BitbucketProvider) FetchComments(ctx context.Context, target PRTarget, 
 			prc.Kind = "review"
 			if inlineData != nil {
 				prc.Path = inlineData.Path
-				if inlineData.From != nil {
-					prc.Side = "LEFT"
-					prc.Line = *inlineData.From
-				} else if inlineData.To != nil {
+				if inlineData.To != nil {
 					prc.Side = "RIGHT"
 					prc.Line = *inlineData.To
+				} else if inlineData.From != nil {
+					prc.Side = "LEFT"
+					prc.Line = *inlineData.From
 				}
 			}
 			review = append(review, prc)
@@ -628,6 +639,26 @@ func (b *BitbucketProvider) ReplyToReviewComment(ctx context.Context, target PRT
 	if prc.InReplyTo == 0 {
 		prc.InReplyTo = commentID
 	}
+
+	// Inherit path, line, and side from parent comment so UI threads it correctly
+	parentPath := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/comments/%d", target.Owner, target.Repo, target.Number, commentID)
+	if parentResp, err := bitbucketRequest(ctx, http.MethodGet, parentPath, token, nil); err == nil {
+		if parentResp.StatusCode == http.StatusOK {
+			var parentComment bitbucketCommentItem
+			if err := json.NewDecoder(parentResp.Body).Decode(&parentComment); err == nil && parentComment.Inline != nil {
+				prc.Path = parentComment.Inline.Path
+				if parentComment.Inline.To != nil {
+					prc.Side = "RIGHT"
+					prc.Line = *parentComment.Inline.To
+				} else if parentComment.Inline.From != nil {
+					prc.Side = "LEFT"
+					prc.Line = *parentComment.Inline.From
+				}
+			}
+		}
+		parentResp.Body.Close()
+	}
+
 	return prc, nil
 }
 
@@ -678,9 +709,17 @@ func redactBitbucketToken(s, token string) string {
 // It applies Basic auth if the token contains ':', or Bearer auth otherwise.
 // Transport errors are sanitized to prevent token leakage.
 func bitbucketRequest(ctx context.Context, method, path, token string, body any) (*http.Response, error) {
-	url := path
-	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
-		url = bitbucketAPIBase + path
+	var reqURL string
+	if strings.HasPrefix(path, "https://") {
+		u, err := url.Parse(path)
+		if err != nil || !strings.EqualFold(u.Hostname(), "api.bitbucket.org") {
+			return nil, fmt.Errorf("bitbucket: invalid api URL host: %s", redactBitbucketToken(path, token))
+		}
+		reqURL = path
+	} else if strings.HasPrefix(path, "/") {
+		reqURL = bitbucketAPIBase + path
+	} else {
+		return nil, fmt.Errorf("bitbucket: invalid request path: %s", redactBitbucketToken(path, token))
 	}
 	var rdr io.Reader
 	if body != nil {
@@ -690,7 +729,7 @@ func bitbucketRequest(ctx context.Context, method, path, token string, body any)
 		}
 		rdr = bytes.NewReader(b)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, url, rdr)
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, rdr)
 	if err != nil {
 		return nil, errors.New(redactBitbucketToken(err.Error(), token))
 	}

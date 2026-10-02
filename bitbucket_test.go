@@ -812,33 +812,33 @@ func TestBitbucketCheckPushAccess(t *testing.T) {
 			wantResult: false,
 		},
 		{
-			name:       "401 Unauthorized returns true (optimistic/unknown for repo tokens)",
+			name:       "401 Unauthorized returns false (fail closed)",
 			statusCode: http.StatusUnauthorized,
 			body:       `{"error": {"message": "Unauthorized"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "403 Forbidden returns true (optimistic/unknown for repo tokens)",
+			name:       "403 Forbidden returns false (fail closed)",
 			statusCode: http.StatusForbidden,
 			body:       `{"error": {"message": "Forbidden"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "404 Not Found returns true (optimistic/unknown for repo tokens)",
+			name:       "404 Not Found returns false (fail closed)",
 			statusCode: http.StatusNotFound,
 			body:       `{"error": {"message": "Not Found"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "500 Internal Server Error returns true",
+			name:       "500 Internal Server Error returns false (fail closed)",
 			statusCode: http.StatusInternalServerError,
 			body:       `{"error": {"message": "Internal error"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "transport network error returns true",
+			name:       "transport network error returns false (fail closed)",
 			netErr:     fmt.Errorf("connection reset by peer"),
-			wantResult: true,
+			wantResult: false,
 		},
 	}
 
@@ -1163,7 +1163,21 @@ func TestBitbucket_U5_ReplyToReviewComment(t *testing.T) {
 
 	var reqBody []byte
 	bitbucketHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		reqBody, _ = io.ReadAll(req.Body)
+		if req.Method == http.MethodGet {
+			// Parent comment fetch
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+					"id": 103,
+					"inline": { "path": "main.go", "to": 15 },
+					"content": { "raw": "parent comment" }
+				}`)),
+				Header: make(http.Header),
+			}, nil
+		}
+		if req.Body != nil {
+			reqBody, _ = io.ReadAll(req.Body)
+		}
 		return &http.Response{
 			StatusCode: http.StatusCreated,
 			Body: io.NopCloser(strings.NewReader(`{
@@ -1210,6 +1224,15 @@ func TestBitbucket_U5_ReplyToReviewComment(t *testing.T) {
 	}
 	if comment.InReplyTo != 103 {
 		t.Errorf("comment.InReplyTo = %d, want 103", comment.InReplyTo)
+	}
+	if comment.Path != "main.go" {
+		t.Errorf("comment.Path = %q, want main.go", comment.Path)
+	}
+	if comment.Line != 15 {
+		t.Errorf("comment.Line = %d, want 15", comment.Line)
+	}
+	if comment.Side != "RIGHT" {
+		t.Errorf("comment.Side = %q, want RIGHT", comment.Side)
 	}
 }
 
@@ -1488,4 +1511,130 @@ func TestBitbucket_U5_SubmitReview_Scenarios(t *testing.T) {
 			t.Errorf("partial.Error() %q does not contain 'verdict'", partial.Error())
 		}
 	})
+}
+
+func TestBitbucketRequestSecurity(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Cleartext HTTP rejected
+	_, err := bitbucketRequest(ctx, http.MethodGet, "http://api.bitbucket.org/2.0/user", "secret-token", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid request path") {
+		t.Fatalf("expected cleartext http rejection, got: %v", err)
+	}
+
+	// 2. SSRF external hostname rejected
+	_, err = bitbucketRequest(ctx, http.MethodGet, "https://evil.attacker.com/steal", "secret-token", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid api URL host") {
+		t.Fatalf("expected external hostname rejection, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "secret-token") {
+		t.Errorf("token leaked in error message: %v", err)
+	}
+
+	// 3. Path without leading slash rejected
+	_, err = bitbucketRequest(ctx, http.MethodGet, "repositories/ws/repo", "token", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid request path") {
+		t.Fatalf("expected relative path rejection without slash, got: %v", err)
+	}
+}
+
+func TestBitbucketContextLineCommentsMapToRight(t *testing.T) {
+	orig := bitbucketHTTPClient.Transport
+	defer func() { bitbucketHTTPClient.Transport = orig }()
+
+	p := &BitbucketProvider{}
+	ctx := context.Background()
+	target := PRTarget{Provider: "bitbucket", Owner: "myws", Repo: "myrepo", Number: 42}
+
+	bitbucketHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"values": [
+					{
+						"id": 101,
+						"created_on": "2026-10-02T10:00:00Z",
+						"content": { "raw": "context comment" },
+						"user": { "nickname": "reviewer" },
+						"inline": {
+							"path": "main.go",
+							"from": 20,
+							"to": 20
+						}
+					}
+				]
+			}`)),
+			Header: make(http.Header),
+		}, nil
+	})
+
+	_, reviews, err := p.FetchComments(ctx, target, "test-token")
+	if err != nil {
+		t.Fatalf("FetchComments failed: %v", err)
+	}
+	if len(reviews) != 1 {
+		t.Fatalf("expected 1 review comment, got %d", len(reviews))
+	}
+	if reviews[0].Side != "RIGHT" {
+		t.Errorf("reviews[0].Side = %q, want RIGHT for context line comment", reviews[0].Side)
+	}
+	if reviews[0].Line != 20 {
+		t.Errorf("reviews[0].Line = %d, want 20", reviews[0].Line)
+	}
+}
+
+func TestBitbucketCheckPushAccessPagination(t *testing.T) {
+	orig := bitbucketHTTPClient.Transport
+	defer func() { bitbucketHTTPClient.Transport = orig }()
+
+	p := &BitbucketProvider{}
+	ctx := context.Background()
+	target := PRTarget{Provider: "bitbucket", Owner: "myws", Repo: "repo2", Number: 42}
+
+	pageRequests := 0
+	bitbucketHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		pageRequests++
+		if strings.Contains(req.URL.RawQuery, "q=") {
+			// Query filter returns empty to trigger pagination fallback
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{ "values": [] }`)),
+				Header: make(http.Header),
+			}, nil
+		}
+		if pageRequests == 2 {
+			// Page 1
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body: io.NopCloser(strings.NewReader(`{
+					"values": [
+						{
+							"permission": "read",
+							"repository": { "full_name": "myws/repo1", "slug": "repo1" }
+						}
+					],
+					"next": "https://api.bitbucket.org/2.0/user/workspaces/myws/permissions/repositories?page=2"
+				}`)),
+				Header: make(http.Header),
+			}, nil
+		}
+		// Page 2
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body: io.NopCloser(strings.NewReader(`{
+				"values": [
+					{
+						"permission": "write",
+						"repository": { "full_name": "myws/repo2", "slug": "repo2" }
+					}
+				]
+			}`)),
+			Header: make(http.Header),
+		}, nil
+	})
+
+	hasPush := p.CheckPushAccess(ctx, target, "valid-token")
+	if !hasPush {
+		t.Errorf("CheckPushAccess() = false, want true for repo found on page 2 with write permission")
+	}
 }

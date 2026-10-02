@@ -1569,3 +1569,170 @@ func (l *localBitbucketMock) FetchPR(ctx context.Context, target PRTarget, token
 func (l *localBitbucketMock) CheckPushAccess(ctx context.Context, target PRTarget, token string) bool {
 	return true
 }
+
+func TestGitAuthCmdSanitization(t *testing.T) {
+	origSSH := os.Getenv("GIT_SSH_COMMAND")
+	origPrompt := os.Getenv("GIT_TERMINAL_PROMPT")
+	origBB := os.Getenv("BITBUCKET_TOKEN")
+	origGH := os.Getenv("GITHUB_TOKEN")
+	defer func() {
+		os.Setenv("GIT_SSH_COMMAND", origSSH)
+		os.Setenv("GIT_TERMINAL_PROMPT", origPrompt)
+		os.Setenv("BITBUCKET_TOKEN", origBB)
+		os.Setenv("GITHUB_TOKEN", origGH)
+	}()
+
+	os.Setenv("GIT_SSH_COMMAND", "ssh -i /path/to/key -o CustomPrompt=yes")
+	os.Setenv("GIT_TERMINAL_PROMPT", "1")
+	os.Setenv("BITBUCKET_TOKEN", "bb-app-password-secret")
+	os.Setenv("GITHUB_TOKEN", "gh-pat-secret")
+
+	cmd := gitAuthCmd("status")
+	var sshCmds []string
+	var promptVals []string
+	for _, env := range cmd.Env {
+		if strings.HasPrefix(env, "GIT_SSH_COMMAND=") {
+			sshCmds = append(sshCmds, env)
+		}
+		if strings.HasPrefix(env, "GIT_TERMINAL_PROMPT=") {
+			promptVals = append(promptVals, env)
+		}
+		if strings.HasPrefix(env, "BITBUCKET_TOKEN=") {
+			t.Errorf("cmd.Env contains BITBUCKET_TOKEN: %s", env)
+		}
+		if strings.HasPrefix(env, "GITHUB_TOKEN=") {
+			t.Errorf("cmd.Env contains GITHUB_TOKEN: %s", env)
+		}
+		if strings.Contains(env, "CustomPrompt=yes") {
+			t.Errorf("cmd.Env contains host GIT_SSH_COMMAND: %s", env)
+		}
+	}
+
+	if len(sshCmds) != 1 || sshCmds[0] != "GIT_SSH_COMMAND=ssh -o BatchMode=yes" {
+		t.Errorf("expected exactly 1 GIT_SSH_COMMAND=ssh -o BatchMode=yes, got: %v", sshCmds)
+	}
+	if len(promptVals) != 1 || promptVals[0] != "GIT_TERMINAL_PROMPT=0" {
+		t.Errorf("expected exactly 1 GIT_TERMINAL_PROMPT=0, got: %v", promptVals)
+	}
+}
+
+func TestHandlePRSubmitConcurrentDraftsPreserved(t *testing.T) {
+	mockProv := &mockReviewSubmitProvider{
+		submitFunc: func(ctx context.Context, target PRTarget, token, headSHA string, comments []prComment, event, body string) error {
+			return nil
+		},
+	}
+
+	sessionMgr := newSessionManager("", t.TempDir())
+	sess := &prSession{
+		provider:    mockProv,
+		target:      PRTarget{Owner: "o", Repo: "r", Number: 10},
+		token:       "token",
+		writeAccess: true,
+		meta:        PRMeta{Number: 10, HeadSHA: "headsha"},
+		comments: []prComment{
+			{ID: 1, Path: "a.go", Line: 10, Side: "RIGHT", Body: "c1"},
+			{ID: 2, Path: "b.go", Line: 20, Side: "RIGHT", Body: "c2"},
+		},
+	}
+
+	srv := &Server{
+		pr:      sess,
+		session: sessionMgr,
+		mux:     http.NewServeMux(),
+	}
+	srv.registerRoutes()
+
+	// Simulate concurrent draft added while SubmitReview is in progress
+	mockProv.submitFunc = func(ctx context.Context, target PRTarget, token, headSHA string, comments []prComment, event, body string) error {
+		sess.mu.Lock()
+		sess.comments = append(sess.comments, prComment{ID: 3, Path: "c.go", Line: 30, Side: "RIGHT", Body: "concurrent draft"})
+		sess.mu.Unlock()
+		return nil
+	}
+
+	bodyJSON := `{"event": "COMMENT", "body": "overall comment"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/pr/submit", strings.NewReader(bodyJSON))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Origin", "http://127.0.0.1:7777")
+	rec := httptest.NewRecorder()
+
+	srv.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("HTTP status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	sess.mu.Lock()
+	remaining := append([]prComment(nil), sess.comments...)
+	sess.mu.Unlock()
+
+	if len(remaining) != 1 {
+		t.Fatalf("len(sess.comments) = %d, want 1 (concurrent draft should be preserved)", len(remaining))
+	}
+	if remaining[0].ID != 3 || remaining[0].Body != "concurrent draft" {
+		t.Errorf("remaining[0] = %+v, want concurrent draft with ID 3", remaining[0])
+	}
+}
+
+func TestBitbucket_CheckoutDeletedSourceBranchFallbackToHeadSHA(t *testing.T) {
+	upstream := t.TempDir()
+	gitTestRun(t, upstream, "init", "--bare", "-b", "main")
+
+	seedClone := t.TempDir()
+	gitTestRun(t, seedClone, "clone", upstream, ".")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(t, seedClone, "config", cfg[0], cfg[1])
+	}
+	gitTestRun(t, seedClone, "checkout", "-b", "main")
+	if err := os.WriteFile(filepath.Join(seedClone, "file.txt"), []byte("base\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, seedClone, "add", "file.txt")
+	gitTestRun(t, seedClone, "commit", "-qm", "initial commit")
+	gitTestRun(t, seedClone, "push", "origin", "main")
+
+	// Branch with fix
+	gitTestRun(t, seedClone, "checkout", "-b", "feature-branch")
+	if err := os.WriteFile(filepath.Join(seedClone, "file.txt"), []byte("feature edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, seedClone, "add", "file.txt")
+	gitTestRun(t, seedClone, "commit", "-qm", "feature commit")
+	gitTestRun(t, seedClone, "push", "origin", "feature-branch")
+	headSHA := strings.TrimSpace(gitTestRun(t, seedClone, "rev-parse", "HEAD"))
+
+	// Delete branch upstream to simulate deleted branch on merged PR
+	gitTestRun(t, seedClone, "push", "origin", "--delete", "feature-branch")
+
+	localClone := t.TempDir()
+	gitTestRun(t, localClone, "clone", upstream, ".")
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+		gitTestRun(t, localClone, "config", cfg[0], cfg[1])
+	}
+
+	testProv := &localBitbucketMock{
+		BitbucketProvider: &BitbucketProvider{},
+		meta: PRMeta{
+			Number:           99,
+			Title:            "Merged PR with deleted branch",
+			BaseRef:          "main",
+			HeadRef:          "", // Empty branch name!
+			HeadSHA:          headSHA,
+			HeadRepoCloneURL: upstream,
+			HeadIsFork:       false,
+		},
+	}
+
+	target := PRTarget{Provider: "bitbucket", Owner: "upstream", Repo: "git", Number: 99}
+	sess, err := checkoutPR(context.Background(), testProv, target, localClone, nil)
+	if err != nil {
+		t.Fatalf("checkoutPR should succeed with HeadSHA fallback when HeadRef is empty: %v", err)
+	}
+	defer sess.Close()
+
+	if sess.meta.HeadSHA != headSHA {
+		t.Errorf("sess.meta.HeadSHA = %q, want %q", sess.meta.HeadSHA, headSHA)
+	}
+}
