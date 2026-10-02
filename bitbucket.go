@@ -214,7 +214,8 @@ func (b *BitbucketProvider) CheckPushAccess(ctx context.Context, target PRTarget
 	for attempts := 0; attempts < 10 && nextURL != ""; attempts++ {
 		resp, err := bitbucketRequest(ctx, http.MethodGet, nextURL, token, nil)
 		if err != nil {
-			return false
+			// Unknown write access (transport error) - treat as allowed to unblock review submission
+			return true
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
@@ -222,7 +223,8 @@ func (b *BitbucketProvider) CheckPushAccess(ctx context.Context, target PRTarget
 				nextURL = fmt.Sprintf("/user/workspaces/%s/permissions/repositories", target.Owner)
 				continue
 			}
-			return false
+			// Unknown write access (HTTP error) - treat as allowed to unblock review submission
+			return true
 		}
 
 		var out struct {
@@ -240,7 +242,8 @@ func (b *BitbucketProvider) CheckPushAccess(ctx context.Context, target PRTarget
 		err = json.NewDecoder(resp.Body).Decode(&out)
 		resp.Body.Close()
 		if err != nil {
-			return false
+			// Unknown write access (decode error) - treat as allowed to unblock review submission
+			return true
 		}
 
 		var matchedPerm string
@@ -279,7 +282,8 @@ func (b *BitbucketProvider) CheckPushAccess(ctx context.Context, target PRTarget
 		nextURL = out.Next
 	}
 
-	return false
+	// Unknown write access (permission not found in any response) - treat as allowed
+	return true
 }
 
 type bitbucketCommentItem struct {

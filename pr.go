@@ -260,6 +260,7 @@ func gitAuthCmd(args ...string) *exec.Cmd {
 			strings.HasPrefix(e, "BITBUCKET_TOKEN=") ||
 			strings.HasPrefix(e, "GIT_CONFIG_KEY_") ||
 			strings.HasPrefix(e, "GIT_CONFIG_VALUE_") ||
+			strings.HasPrefix(e, "GIT_CONFIG_COUNT=") ||
 			strings.HasPrefix(e, "GIT_SSH_COMMAND=") ||
 			strings.HasPrefix(e, "GIT_TERMINAL_PROMPT=") {
 			continue

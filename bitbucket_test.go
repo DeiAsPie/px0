@@ -799,7 +799,7 @@ func TestBitbucketCheckPushAccess(t *testing.T) {
 			wantResult: false,
 		},
 		{
-			name:       "repo not in permissions list returns false",
+			name:       "repo not in permissions list returns true (unknown write access)",
 			statusCode: http.StatusOK,
 			body: `{
 				"values": [
@@ -809,36 +809,36 @@ func TestBitbucketCheckPushAccess(t *testing.T) {
 					}
 				]
 			}`,
-			wantResult: false,
+			wantResult: true,
 		},
 		{
-			name:       "401 Unauthorized returns false (fail closed)",
+			name:       "401 Unauthorized returns true (unknown write access)",
 			statusCode: http.StatusUnauthorized,
 			body:       `{"error": {"message": "Unauthorized"}}`,
-			wantResult: false,
+			wantResult: true,
 		},
 		{
-			name:       "403 Forbidden returns false (fail closed)",
+			name:       "403 Forbidden returns true (unknown write access)",
 			statusCode: http.StatusForbidden,
 			body:       `{"error": {"message": "Forbidden"}}`,
-			wantResult: false,
+			wantResult: true,
 		},
 		{
-			name:       "404 Not Found returns false (fail closed)",
+			name:       "404 Not Found returns true (unknown write access)",
 			statusCode: http.StatusNotFound,
 			body:       `{"error": {"message": "Not Found"}}`,
-			wantResult: false,
+			wantResult: true,
 		},
 		{
-			name:       "500 Internal Server Error returns false (fail closed)",
+			name:       "500 Internal Server Error returns true (unknown write access)",
 			statusCode: http.StatusInternalServerError,
 			body:       `{"error": {"message": "Internal error"}}`,
-			wantResult: false,
+			wantResult: true,
 		},
 		{
-			name:       "transport network error returns false (fail closed)",
+			name:       "transport network error returns true (unknown write access)",
 			netErr:     fmt.Errorf("connection reset by peer"),
-			wantResult: false,
+			wantResult: true,
 		},
 	}
 
@@ -1598,8 +1598,8 @@ func TestBitbucketCheckPushAccessPagination(t *testing.T) {
 			// Query filter returns empty to trigger pagination fallback
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Body: io.NopCloser(strings.NewReader(`{ "values": [] }`)),
-				Header: make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{ "values": [] }`)),
+				Header:     make(http.Header),
 			}, nil
 		}
 		if pageRequests == 2 {

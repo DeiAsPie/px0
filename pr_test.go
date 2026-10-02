@@ -1575,17 +1575,20 @@ func TestGitAuthCmdSanitization(t *testing.T) {
 	origPrompt := os.Getenv("GIT_TERMINAL_PROMPT")
 	origBB := os.Getenv("BITBUCKET_TOKEN")
 	origGH := os.Getenv("GITHUB_TOKEN")
+	origConfigCount := os.Getenv("GIT_CONFIG_COUNT")
 	defer func() {
 		os.Setenv("GIT_SSH_COMMAND", origSSH)
 		os.Setenv("GIT_TERMINAL_PROMPT", origPrompt)
 		os.Setenv("BITBUCKET_TOKEN", origBB)
 		os.Setenv("GITHUB_TOKEN", origGH)
+		os.Setenv("GIT_CONFIG_COUNT", origConfigCount)
 	}()
 
 	os.Setenv("GIT_SSH_COMMAND", "ssh -i /path/to/key -o CustomPrompt=yes")
 	os.Setenv("GIT_TERMINAL_PROMPT", "1")
 	os.Setenv("BITBUCKET_TOKEN", "bb-app-password-secret")
 	os.Setenv("GITHUB_TOKEN", "gh-pat-secret")
+	os.Setenv("GIT_CONFIG_COUNT", "1")
 
 	cmd := gitAuthCmd("status")
 	var sshCmds []string
@@ -1602,6 +1605,9 @@ func TestGitAuthCmdSanitization(t *testing.T) {
 		}
 		if strings.HasPrefix(env, "GITHUB_TOKEN=") {
 			t.Errorf("cmd.Env contains GITHUB_TOKEN: %s", env)
+		}
+		if strings.HasPrefix(env, "GIT_CONFIG_COUNT=") {
+			t.Errorf("cmd.Env contains GIT_CONFIG_COUNT: %s", env)
 		}
 		if strings.Contains(env, "CustomPrompt=yes") {
 			t.Errorf("cmd.Env contains host GIT_SSH_COMMAND: %s", env)

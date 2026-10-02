@@ -101,10 +101,7 @@ px0 reviews pull requests from GitHub and Bitbucket Cloud by checking out the so
 - **Authentication**:
   - Configure `bitbucket.token` in px0 Settings (`~/.px0/settings.json` or Settings modal `Cmd/Ctrl+,` > Bitbucket).
   - Or set the `BITBUCKET_TOKEN` environment variable.
-  - Value can be an App Password (`username:app_password`) or API access token.
-- **Required App Password Scopes**:
-  - **Repositories**: `Read` (fetch metadata and PR diffs), `Write` (push commits back to the PR branch).
-  - **Pull requests**: `Read` (read conversation and inline comments), `Write` (post inline comments, replies, and submit reviews).
+  - Value is an API token: `email:api_token` for Basic auth, or a bare token for Bearer auth. Repository/workspace access tokens use Bearer auth only.
 - **SSH Prerequisite**:
   - Git repository clone, fetch, and push operations run via SSH (`git@bitbucket.org:...`). Ensure you have an SSH public key added to your Bitbucket account (**Personal settings** > **SSH keys**) and loaded in your local SSH agent (`ssh-add`).
 
