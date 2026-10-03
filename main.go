@@ -111,7 +111,7 @@ func main() {
 	var targetDur time.Duration
 	if isPR {
 		sp := newSpinner(fmt.Sprintf("Preparing PR #%d (%s/%s)...", prTarget.Number, prTarget.Owner, prTarget.Repo), os.Stdout)
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		p, err := checkoutPR(ctx, prProvider, prTarget, ".", func(msg string) {
 			sp.Update(msg)
 		})

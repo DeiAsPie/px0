@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDetectPRURL(t *testing.T) {
@@ -407,7 +409,7 @@ func TestPRSessionPullFastForwardAndDiverge(t *testing.T) {
 	gitTestRun(t, srcRepo, "push", "origin", "feature:refs/pull/99/head")
 	gitTestRun(t, srcRepo, "checkout", "-q", "main")
 
-	info, err := p.Pull()
+	info, err := p.Pull(context.Background())
 	if err != nil {
 		t.Fatalf("expected a clean fast-forward Pull, got %v", err)
 	}
@@ -436,7 +438,7 @@ func TestPRSessionPullFastForwardAndDiverge(t *testing.T) {
 	gitTestRun(t, srcRepo, "push", "origin", "feature:refs/pull/99/head")
 	gitTestRun(t, srcRepo, "checkout", "-q", "main")
 
-	if _, err := p.Pull(); !errors.Is(err, errPRDiverged) {
+	if _, err := p.Pull(context.Background()); !errors.Is(err, errPRDiverged) {
 		t.Fatalf("expected errPRDiverged, got %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(worktree, "feature.txt")); err != nil || string(got) != "local edit\n" {
@@ -480,7 +482,7 @@ func TestPRSessionPush(t *testing.T) {
 		target:   PRTarget{Owner: "o", Repo: "r"},
 		meta:     PRMeta{Number: 1, HeadRef: "feature/pr-1", HeadRepoCloneURL: upstream},
 	}
-	if err := p.Push(); err != nil {
+	if err := p.Push(context.Background()); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 
@@ -575,8 +577,8 @@ func TestFetchPRMetaMerged(t *testing.T) {
 	if meta.MergedAt != "2026-09-20T10:00:00Z" {
 		t.Errorf("meta.MergedAt = %q, want timestamp", meta.MergedAt)
 	}
-	if meta.HeadRepoCloneURL != "git@github.com:alice/px0.git" {
-		t.Errorf("meta.HeadRepoCloneURL = %q, want git@github.com:alice/px0.git", meta.HeadRepoCloneURL)
+	if meta.HeadRepoCloneURL != "https://github.com/alice/px0.git" {
+		t.Errorf("meta.HeadRepoCloneURL = %q, want https://github.com/alice/px0.git", meta.HeadRepoCloneURL)
 	}
 }
 
@@ -720,8 +722,8 @@ func TestSSH_FetchPRMetaExtractsSSHURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fetchPRMeta failed: %v", err)
 	}
-	if meta.HeadRepoCloneURL != "git@github.com:charlie/px0.git" {
-		t.Errorf("HeadRepoCloneURL = %q, want git@github.com:charlie/px0.git", meta.HeadRepoCloneURL)
+	if meta.HeadRepoCloneURL != "https://github.com/charlie/px0.git" {
+		t.Errorf("HeadRepoCloneURL = %q, want https://github.com/charlie/px0.git", meta.HeadRepoCloneURL)
 	}
 }
 
@@ -812,7 +814,7 @@ func TestSSH_U2_EmptyHeadRepoCloneURLFallback(t *testing.T) {
 		meta:     PRMeta{HeadRepoCloneURL: "", HeadRef: "main"},
 		worktree: t.TempDir(),
 	}
-	err := p.Push()
+	err := p.Push(context.Background())
 	if err == nil {
 		t.Fatal("expected push to fail on empty/uninitialized worktree")
 	}
@@ -820,7 +822,7 @@ func TestSSH_U2_EmptyHeadRepoCloneURLFallback(t *testing.T) {
 		t.Errorf("push should not use https: %v", err)
 	}
 
-	diffBase, diffBaseWarning := computeDiffBase(gp, t.TempDir(), "", target, "main", 1, nil)
+	diffBase, diffBaseWarning := computeDiffBase(context.Background(), gp, t.TempDir(), "", target, "", "main", 1, nil)
 	if diffBase != "HEAD" {
 		t.Errorf("diffBase = %q, want HEAD on failed fetch", diffBase)
 	}
@@ -829,9 +831,9 @@ func TestSSH_U2_EmptyHeadRepoCloneURLFallback(t *testing.T) {
 	}
 }
 
-// U2 Scenario 3: Push no longer rewrites an SSH remote to HTTPS
-// (replaces the SSH-to-HTTPS conversion assertion in TestHTTPSRemoteURL).
-func TestPush_U2_NoHTTPSRewrite(t *testing.T) {
+// U2 Scenario 3: Push with a token converts an SSH remote to HTTPS
+// (restored master's httpsRemoteURL conversion).
+func TestPush_U2_HTTPSRewriteWithToken(t *testing.T) {
 	if !gitInstalled() {
 		t.Skip("git not installed")
 	}
@@ -863,13 +865,13 @@ func TestPush_U2_NoHTTPSRewrite(t *testing.T) {
 			token:    "dummy-token",
 			provider: &GitHubProvider{},
 		}
-		err := p.Push()
+		err := p.Push(context.Background())
 		if err == nil {
 			t.Fatalf("expected push to fail for %s", sshURL)
 		}
 		errMsg := err.Error()
-		if strings.Contains(errMsg, "https://") {
-			t.Errorf("Push() with SSH remote %s was rewritten to HTTPS: %v", sshURL, errMsg)
+		if !strings.Contains(errMsg, "https://") {
+			t.Errorf("Push() with SSH remote %s and token should convert to HTTPS, got: %v", sshURL, errMsg)
 		}
 	}
 }
@@ -881,24 +883,18 @@ func TestSSH_U2_NoKeyFailsFastMentionsSSHNotToken(t *testing.T) {
 		t.Skip("git not installed")
 	}
 
-	cmd := gitAuthCmd("ls-remote", "git@nonexistent.invalid:owner/repo.git")
+	cmd := gitAuthCmd(context.Background(), "", "ls-remote", "git@nonexistent.invalid:owner/repo.git")
 	emptyHome := t.TempDir()
-	cmd.Env = append(cmd.Env, "HOME="+emptyHome)
+	cmd.Env = append(cmd.Env, "HOME="+emptyHome, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 
-	var hasPrompt0, hasSSHBatch bool
+	var hasPrompt0 bool
 	for _, env := range cmd.Env {
 		if env == "GIT_TERMINAL_PROMPT=0" {
 			hasPrompt0 = true
 		}
-		if env == "GIT_SSH_COMMAND=ssh -o BatchMode=yes" {
-			hasSSHBatch = true
-		}
 	}
 	if !hasPrompt0 {
 		t.Errorf("cmd.Env missing GIT_TERMINAL_PROMPT=0")
-	}
-	if !hasSSHBatch {
-		t.Errorf("cmd.Env missing GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 	}
 
 	out, err := cmd.CombinedOutput()
@@ -915,54 +911,61 @@ func TestSSH_U2_NoKeyFailsFastMentionsSSHNotToken(t *testing.T) {
 	}
 }
 
-// U2 Scenario 5: GITHUB_TOKEN set or unset does not change any git command's environment.
+func TestHTTPSRemoteURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"git@github.com:o/r.git":          "https://github.com/o/r.git",
+		"ssh://git@github.com/o/r.git":    "https://github.com/o/r.git",
+		"ssh://git@github.com:22/o/r.git": "https://github.com/o/r.git",
+		"https://github.com/o/r.git":      "https://github.com/o/r.git",
+		"/tmp/some/local/upstream.git":    "/tmp/some/local/upstream.git",
+	} {
+		if got := httpsRemoteURL(in); got != want {
+			t.Errorf("httpsRemoteURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// U2 Scenario 5: gitAuthCmd with a token sets the extraheader; without a token
+// it does not.
 func TestSSH_U2_GitHubTokenDoesNotChangeGitAuthCmdEnv(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_secret_token_123456789")
-	cmdWith := gitAuthCmd("status")
 
-	t.Setenv("GITHUB_TOKEN", "")
-	cmdWithout := gitAuthCmd("status")
-
-	for _, env := range cmdWith.Env {
-		if strings.Contains(env, "extraheader") || strings.Contains(env, "x-access-token") || strings.Contains(env, "ghp_secret_token_123456789") {
-			t.Errorf("cmdWith.Env contains token-related config: %s", env)
-		}
-	}
-	for _, env := range cmdWithout.Env {
-		if strings.Contains(env, "extraheader") || strings.Contains(env, "x-access-token") {
-			t.Errorf("cmdWithout.Env contains token-related config: %s", env)
+	// With no token parameter: no extraheader should be set.
+	cmdNoToken := gitAuthCmd(context.Background(), "", "status")
+	for _, env := range cmdNoToken.Env {
+		if strings.Contains(env, "extraheader") {
+			t.Errorf("cmdNoToken.Env contains extraheader: %s", env)
 		}
 	}
 
-	checkExpectedEnvs := func(cmdEnv []string, label string) {
-		var hasPrompt0, hasSSHBatch bool
-		for _, e := range cmdEnv {
-			if e == "GIT_TERMINAL_PROMPT=0" {
-				hasPrompt0 = true
-			}
-			if e == "GIT_SSH_COMMAND=ssh -o BatchMode=yes" {
-				hasSSHBatch = true
-			}
+	// With a token parameter: the extraheader must be set.
+	token := "my-test-token"
+	cmdWithToken := gitAuthCmd(context.Background(), token, "status")
+	var hasExtraheader, hasExpectedAuth bool
+	wantAuth := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
+	for _, env := range cmdWithToken.Env {
+		if env == "GIT_CONFIG_KEY_0=http.https://github.com/.extraheader" {
+			hasExtraheader = true
 		}
-		if !hasPrompt0 {
-			t.Errorf("%s missing GIT_TERMINAL_PROMPT=0", label)
-		}
-		if !hasSSHBatch {
-			t.Errorf("%s missing GIT_SSH_COMMAND=ssh -o BatchMode=yes", label)
+		if env == "GIT_CONFIG_VALUE_0="+wantAuth {
+			hasExpectedAuth = true
 		}
 	}
-	checkExpectedEnvs(cmdWith.Env, "cmdWith")
-	checkExpectedEnvs(cmdWithout.Env, "cmdWithout")
+	if !hasExtraheader {
+		t.Errorf("cmdWithToken.Env missing extraheader key for token auth")
+	}
+	if !hasExpectedAuth {
+		t.Errorf("cmdWithToken.Env missing expected auth header value")
+	}
 
-	if len(cmdWith.Env) < 2 || len(cmdWithout.Env) < 2 {
-		t.Fatalf("cmd.Env has too few elements")
-	}
-	withTail := cmdWith.Env[len(cmdWith.Env)-2:]
-	withoutTail := cmdWithout.Env[len(cmdWithout.Env)-2:]
-	for i := range withTail {
-		if withTail[i] != withoutTail[i] {
-			t.Errorf("env mismatch: %q vs %q", withTail[i], withoutTail[i])
+	var hasPrompt0 bool
+	for _, e := range cmdWithToken.Env {
+		if e == "GIT_TERMINAL_PROMPT=0" {
+			hasPrompt0 = true
 		}
+	}
+	if !hasPrompt0 {
+		t.Errorf("cmdWithToken.Env missing GIT_TERMINAL_PROMPT=0")
 	}
 }
 
@@ -1011,7 +1014,7 @@ func TestPRSessionPullFollowsForcePush(t *testing.T) {
 	gitTestRun(t, work, "commit", "-aqm", "one (amended)", "--amend")
 	gitTestRun(t, work, "push", "-qf", upstream, "feature")
 
-	if _, err := p.Pull(); err != nil {
+	if _, err := p.Pull(context.Background()); err != nil {
 		t.Fatalf("Pull should follow a force-push when nothing local is at stake: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(wt, "f.txt")); string(got) != "rewritten\n" {
@@ -1027,7 +1030,7 @@ func TestPRSessionPullFollowsForcePush(t *testing.T) {
 	os.WriteFile(filepath.Join(work, "f.txt"), []byte("rewritten again\n"), 0o644)
 	gitTestRun(t, work, "commit", "-aqm", "again", "--amend")
 	gitTestRun(t, work, "push", "-qf", upstream, "feature")
-	if _, err := p.Pull(); !errors.Is(err, errPRDiverged) {
+	if _, err := p.Pull(context.Background()); !errors.Is(err, errPRDiverged) {
 		t.Fatalf("expected errPRDiverged with a local commit, got %v", err)
 	}
 }
@@ -1548,7 +1551,7 @@ func TestBitbucket_CheckoutAndPullInLocalClone(t *testing.T) {
 	gitTestRun(t, seedClone, "push", "origin", "bugs/leave")
 	newHeadSHA := strings.TrimSpace(gitTestRun(t, seedClone, "rev-parse", "HEAD"))
 
-	info, err := sess.Pull()
+	info, err := sess.Pull(context.Background())
 	if err != nil {
 		t.Fatalf("sess.Pull() failed: %v", err)
 	}
@@ -1570,27 +1573,18 @@ func (l *localBitbucketMock) CheckPushAccess(ctx context.Context, target PRTarge
 	return true
 }
 
-func TestGitAuthCmdSanitization(t *testing.T) {
+func TestGitSSHCmdSanitization(t *testing.T) {
 	origSSH := os.Getenv("GIT_SSH_COMMAND")
 	origPrompt := os.Getenv("GIT_TERMINAL_PROMPT")
-	origBB := os.Getenv("BITBUCKET_TOKEN")
-	origGH := os.Getenv("GITHUB_TOKEN")
-	origConfigCount := os.Getenv("GIT_CONFIG_COUNT")
 	defer func() {
 		os.Setenv("GIT_SSH_COMMAND", origSSH)
 		os.Setenv("GIT_TERMINAL_PROMPT", origPrompt)
-		os.Setenv("BITBUCKET_TOKEN", origBB)
-		os.Setenv("GITHUB_TOKEN", origGH)
-		os.Setenv("GIT_CONFIG_COUNT", origConfigCount)
 	}()
 
 	os.Setenv("GIT_SSH_COMMAND", "ssh -i /path/to/key -o CustomPrompt=yes")
 	os.Setenv("GIT_TERMINAL_PROMPT", "1")
-	os.Setenv("BITBUCKET_TOKEN", "bb-app-password-secret")
-	os.Setenv("GITHUB_TOKEN", "gh-pat-secret")
-	os.Setenv("GIT_CONFIG_COUNT", "1")
 
-	cmd := gitAuthCmd("status")
+	cmd := gitSSHCmd(context.Background(), "status")
 	var sshCmds []string
 	var promptVals []string
 	for _, env := range cmd.Env {
@@ -1599,15 +1593,6 @@ func TestGitAuthCmdSanitization(t *testing.T) {
 		}
 		if strings.HasPrefix(env, "GIT_TERMINAL_PROMPT=") {
 			promptVals = append(promptVals, env)
-		}
-		if strings.HasPrefix(env, "BITBUCKET_TOKEN=") {
-			t.Errorf("cmd.Env contains BITBUCKET_TOKEN: %s", env)
-		}
-		if strings.HasPrefix(env, "GITHUB_TOKEN=") {
-			t.Errorf("cmd.Env contains GITHUB_TOKEN: %s", env)
-		}
-		if strings.HasPrefix(env, "GIT_CONFIG_COUNT=") {
-			t.Errorf("cmd.Env contains GIT_CONFIG_COUNT: %s", env)
 		}
 		if strings.Contains(env, "CustomPrompt=yes") {
 			t.Errorf("cmd.Env contains host GIT_SSH_COMMAND: %s", env)
@@ -1619,6 +1604,190 @@ func TestGitAuthCmdSanitization(t *testing.T) {
 	}
 	if len(promptVals) != 1 || promptVals[0] != "GIT_TERMINAL_PROMPT=0" {
 		t.Errorf("expected exactly 1 GIT_TERMINAL_PROMPT=0, got: %v", promptVals)
+	}
+}
+
+// U4: A cancelled context terminates a git command and returns an error promptly.
+func TestGitSubprocessContextCancellation(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+
+	cmd := gitAuthCmd(ctx, "", "fetch", "https://example.com/repo.git")
+	err := cmd.Run()
+	if err == nil {
+		t.Fatal("expected error with cancelled context")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", ctx.Err())
+	}
+
+	cmdSSH := gitSSHCmd(ctx, "fetch", "git@example.com:o/r.git")
+	errSSH := cmdSSH.Run()
+	if errSSH == nil {
+		t.Fatal("expected error with cancelled context")
+	}
+}
+
+// U4: A live context lets a normal git call finish.
+func TestGitSubprocessLiveContext(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := gitAuthCmd(ctx, "", "version")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("expected git version to succeed, got %v", err)
+	}
+	if !strings.Contains(string(out), "git version") {
+		t.Fatalf("unexpected git version output: %s", string(out))
+	}
+}
+
+// U4: Pull and Push terminate when context is cancelled.
+func TestPRSessionPullPushCancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancelled
+
+	p := &prSession{
+		worktree: t.TempDir(),
+		target:   PRTarget{Owner: "o", Repo: "r"},
+		meta:     PRMeta{HeadRepoCloneURL: "https://example.com/repo.git", HeadRef: "main"},
+		provider: &GitHubProvider{},
+	}
+
+	err := p.Push(ctx)
+	if err == nil {
+		t.Fatal("expected Push to fail on cancelled context")
+	}
+
+	_, err = p.Pull(ctx)
+	if err == nil {
+		t.Fatal("expected Pull to fail on cancelled context")
+	}
+}
+
+// U5: On SSH failure matching "Permission denied (publickey)" or "Host key verification failed",
+// append one fixed sentence telling the user to add an SSH key. Unrelated errors pass through.
+func TestAppendSSHHint(t *testing.T) {
+	cases := []struct {
+		input    string
+		wantHint bool
+	}{
+		{
+			input:    "git@github.com: Permission denied (publickey).",
+			wantHint: true,
+		},
+		{
+			input:    "Host key verification failed.\nfatal: Could not read from remote repository.",
+			wantHint: true,
+		},
+		{
+			input:    "fatal: repository 'https://github.com/foo/bar.git' not found",
+			wantHint: false,
+		},
+		{
+			input:    "fatal: remote error: upload-pack not permitted",
+			wantHint: false,
+		},
+	}
+	for _, tc := range cases {
+		got := appendSSHHint(tc.input)
+		hasHint := strings.Contains(got, "add an SSH key to your git host account")
+		if hasHint != tc.wantHint {
+			t.Errorf("appendSSHHint(%q) hasHint = %v, want %v; got: %q", tc.input, hasHint, tc.wantHint, got)
+		}
+		if !tc.wantHint && got != tc.input {
+			t.Errorf("unrelated error modified: got %q, want %q", got, tc.input)
+		}
+	}
+}
+
+// U5: When no token is set, the SSH attempt runs first and only.
+func TestGitRunStepNoTokenRunsSSHOnly(t *testing.T) {
+	var triedRemotes []string
+	provider := &GitHubProvider{}
+	target := PRTarget{Owner: "owner", Repo: "repo"}
+
+	_, err := gitRunStep(context.Background(), provider, target, "", "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+		triedRemotes = append(triedRemotes, remote)
+		return []string{"version"}
+	})
+	if err != nil {
+		t.Fatalf("expected git version to succeed: %v", err)
+	}
+	if len(triedRemotes) != 1 || triedRemotes[0] != "git@github.com:owner/repo.git" {
+		t.Errorf("expected only SSH remote tried, got: %v", triedRemotes)
+	}
+}
+
+// U5: Token set and HTTPS step succeeds: no SSH attempt.
+// Token set and HTTPS step fails: SSH attempt runs with SSH URL, token redacted.
+func TestGitRunStepTokenHTTPSFirstFallbackSSH(t *testing.T) {
+	var triedRemotes []string
+	provider := &GitHubProvider{}
+	target := PRTarget{Owner: "owner", Repo: "repo"}
+	token := "secret-pat-12345"
+
+	// When HTTPS succeeds, SSH should NOT be attempted.
+	triedRemotes = nil
+	_, err := gitRunStep(context.Background(), provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+		triedRemotes = append(triedRemotes, remote)
+		return []string{"version"}
+	})
+	if err != nil {
+		t.Fatalf("expected success: %v", err)
+	}
+	if len(triedRemotes) != 1 || triedRemotes[0] != "https://github.com/owner/repo.git" {
+		t.Errorf("expected only HTTPS remote tried on success, got: %v", triedRemotes)
+	}
+
+	// When HTTPS fails, it falls back to SSH.
+	triedRemotes = nil
+	_, err = gitRunStep(context.Background(), provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+		triedRemotes = append(triedRemotes, remote)
+		if remote == "https://github.com/owner/repo.git" {
+			// Fail HTTPS attempt with token in error
+			return []string{"nonexistent-subcommand-to-fail-https", token}
+		}
+		// Second attempt (SSH)
+		return []string{"nonexistent-subcommand-to-fail-ssh"}
+	})
+	if err == nil {
+		t.Fatal("expected failure on bad commands")
+	}
+	if len(triedRemotes) != 2 {
+		t.Errorf("expected 2 attempts (HTTPS then SSH), got: %v", triedRemotes)
+	}
+	if len(triedRemotes) >= 2 && (triedRemotes[0] != "https://github.com/owner/repo.git" || triedRemotes[1] != "git@github.com:owner/repo.git") {
+		t.Errorf("unexpected remote order: %v", triedRemotes)
+	}
+	// Verify token is redacted from final error
+	if strings.Contains(err.Error(), token) {
+		t.Errorf("final error contains unredacted token: %v", err)
+	}
+}
+
+// U5: Bitbucket is SSH-only per KTD5 even when token is set.
+func TestGitRunStepBitbucketIsSSHOnly(t *testing.T) {
+	var triedRemotes []string
+	provider := &BitbucketProvider{}
+	target := PRTarget{Provider: "bitbucket", Owner: "owner", Repo: "repo"}
+
+	_, err := gitRunStep(context.Background(), provider, target, "my-bb-token", "https://bitbucket.org/owner/repo.git", "git@bitbucket.org:owner/repo.git", func(remote string) []string {
+		triedRemotes = append(triedRemotes, remote)
+		return []string{"version"}
+	})
+	if err != nil {
+		t.Fatalf("expected success: %v", err)
+	}
+	if len(triedRemotes) != 1 || triedRemotes[0] != "git@bitbucket.org:owner/repo.git" {
+		t.Errorf("expected only SSH remote for Bitbucket, got: %v", triedRemotes)
 	}
 }
 

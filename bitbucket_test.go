@@ -799,7 +799,7 @@ func TestBitbucketCheckPushAccess(t *testing.T) {
 			wantResult: false,
 		},
 		{
-			name:       "repo not in permissions list returns true (unknown write access)",
+			name:       "repo not in permissions list returns false (fail closed)",
 			statusCode: http.StatusOK,
 			body: `{
 				"values": [
@@ -809,36 +809,36 @@ func TestBitbucketCheckPushAccess(t *testing.T) {
 					}
 				]
 			}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "401 Unauthorized returns true (unknown write access)",
+			name:       "401 Unauthorized returns false (fail closed)",
 			statusCode: http.StatusUnauthorized,
 			body:       `{"error": {"message": "Unauthorized"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "403 Forbidden returns true (unknown write access)",
+			name:       "403 Forbidden returns false (fail closed)",
 			statusCode: http.StatusForbidden,
 			body:       `{"error": {"message": "Forbidden"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "404 Not Found returns true (unknown write access)",
+			name:       "404 Not Found returns false (fail closed)",
 			statusCode: http.StatusNotFound,
 			body:       `{"error": {"message": "Not Found"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "500 Internal Server Error returns true (unknown write access)",
+			name:       "500 Internal Server Error returns false (fail closed)",
 			statusCode: http.StatusInternalServerError,
 			body:       `{"error": {"message": "Internal error"}}`,
-			wantResult: true,
+			wantResult: false,
 		},
 		{
-			name:       "transport network error returns true (unknown write access)",
+			name:       "transport network error returns false (fail closed)",
 			netErr:     fmt.Errorf("connection reset by peer"),
-			wantResult: true,
+			wantResult: false,
 		},
 	}
 

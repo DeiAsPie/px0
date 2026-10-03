@@ -218,7 +218,7 @@ func fetchPRMeta(ctx context.Context, owner, repo string, num int, token string)
 		BaseRef:          out.Base.Ref,
 		HeadRef:          out.Head.Ref,
 		HeadSHA:          out.Head.SHA,
-		HeadRepoCloneURL: out.Head.Repo.SSHURL,
+		HeadRepoCloneURL: out.Head.Repo.CloneURL,
 	}
 	m.HeadIsFork = out.Head.Repo.FullName != "" && !strings.EqualFold(out.Head.Repo.FullName, owner+"/"+repo)
 	return m, nil
