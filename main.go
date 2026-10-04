@@ -94,9 +94,6 @@ func main() {
 		}
 		if provider, pt, ok := DetectPRURL(arg0); ok {
 			prProvider, prTarget, isPR = provider, pt, true
-		} else if IsURL(arg0) {
-			_, _, err := ParsePRURL(arg0)
-			fatal(err)
 		} else {
 			target = arg0
 		}
@@ -111,7 +108,7 @@ func main() {
 	var targetDur time.Duration
 	if isPR {
 		sp := newSpinner(fmt.Sprintf("Preparing PR #%d (%s/%s)...", prTarget.Number, prTarget.Owner, prTarget.Repo), os.Stdout)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		p, err := checkoutPR(ctx, prProvider, prTarget, ".", func(msg string) {
 			sp.Update(msg)
 		})

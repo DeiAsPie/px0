@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestDetectPRURL(t *testing.T) {
@@ -71,143 +70,25 @@ func TestParsePRURLUnsupported(t *testing.T) {
 	}
 }
 
-func TestParsePRURL_U1Scenarios(t *testing.T) {
+func TestParsePRURLBitbucketUnregistered(t *testing.T) {
 	orig := defaultProviders
 	defaultProviders = []GitProvider{&GitHubProvider{}}
 	defer func() { defaultProviders = orig }()
 
-	tmp := t.TempDir()
-	someDir := filepath.Join(tmp, "some", "dir")
-	if err := os.MkdirAll(someDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	literalHTTPSDir := filepath.Join(tmp, "https:")
-	if err := os.MkdirAll(literalHTTPSDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-
-	tests := []struct {
-		name          string
-		arg           string
-		wantIsURL     bool
-		wantDetect    bool
-		wantErr       bool
-		errContains   []string
-		errNotContain []string
-		isFSTarget    bool
-	}{
-		{
-			name:        "Scenario 1: Bitbucket PR URL without registered provider returns unsupported error, not path error",
-			arg:         "https://bitbucket.org/blgtech/hrms/pull-requests/371",
-			wantIsURL:   true,
-			wantDetect:  false,
-			wantErr:     true,
-			errContains: []string{"unsupported or unrecognized PR URL", "GitHub", "Bitbucket"},
-			errNotContain: []string{
-				"lstat",
-				"no such file or directory",
-				"invalid target",
-			},
-			isFSTarget: false,
-		},
-		{
-			name:        "Scenario 2: GitLab MR URL returns unsupported error naming GitHub and Bitbucket shapes",
-			arg:         "https://gitlab.com/a/b/-/merge_requests/1",
-			wantIsURL:   true,
-			wantDetect:  false,
-			wantErr:     true,
-			errContains: []string{"unsupported or unrecognized PR URL", "GitHub", "Bitbucket", "https://github.com/", "https://bitbucket.org/"},
-			errNotContain: []string{
-				"lstat",
-				"no such file or directory",
-			},
-			isFSTarget: false,
-		},
-		{
-			name:       "Scenario 3a: Dot resolves as filesystem target",
-			arg:        ".",
-			wantIsURL:  false,
-			wantDetect: false,
-			wantErr:    true,
-			isFSTarget: true,
-		},
-		{
-			name:       "Scenario 3b: Relative dir resolves as filesystem target",
-			arg:        someDir,
-			wantIsURL:  false,
-			wantDetect: false,
-			wantErr:    true,
-			isFSTarget: true,
-		},
-		{
-			name:       "Scenario 3c: Absolute path resolves as filesystem target",
-			arg:        tmp,
-			wantIsURL:  false,
-			wantDetect: false,
-			wantErr:    true,
-			isFSTarget: true,
-		},
-		{
-			name:        "Scenario 4: Argument containing :// is intercepted by IsURL and never reaches literal https: dir",
-			arg:         "https://bitbucket.org/blgtech/hrms/pull-requests/371",
-			wantIsURL:   true,
-			wantDetect:  false,
-			wantErr:     true,
-			errContains: []string{"unsupported or unrecognized PR URL"},
-			errNotContain: []string{
-				"lstat",
-				"no such file or directory",
-			},
-			isFSTarget: false,
-		},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			gotIsURL := IsURL(tc.arg)
-			if gotIsURL != tc.wantIsURL {
-				t.Errorf("IsURL(%q) = %v, want %v", tc.arg, gotIsURL, tc.wantIsURL)
-			}
-
-			_, _, gotDetect := DetectPRURL(tc.arg)
-			if gotDetect != tc.wantDetect {
-				t.Errorf("DetectPRURL(%q) = %v, want %v", tc.arg, gotDetect, tc.wantDetect)
-			}
-
-			_, _, err := ParsePRURL(tc.arg)
-			if (err != nil) != tc.wantErr {
-				t.Errorf("ParsePRURL(%q) err = %v, wantErr = %v", tc.arg, err, tc.wantErr)
-			}
-			if err != nil {
-				errMsg := err.Error()
-				for _, sub := range tc.errContains {
-					if !strings.Contains(errMsg, sub) {
-						t.Errorf("ParsePRURL(%q) error %q does not contain %q", tc.arg, errMsg, sub)
-					}
-				}
-				for _, sub := range tc.errNotContain {
-					if strings.Contains(errMsg, sub) {
-						t.Errorf("ParsePRURL(%q) error %q unexpectedly contains %q", tc.arg, errMsg, sub)
-					}
-				}
-			}
-
-			if tc.isFSTarget {
-				root, _, _, resolveErr := resolveTarget(tc.arg)
-				if resolveErr != nil {
-					t.Errorf("resolveTarget(%q) failed: %v", tc.arg, resolveErr)
-				}
-				if root == "" {
-					t.Errorf("resolveTarget(%q) returned empty root", tc.arg)
-				}
-			}
-
-			if tc.wantIsURL && !tc.wantDetect {
-				if !gotIsURL {
-					t.Errorf("guard failed: %q containing :// must have IsURL == true", tc.arg)
-				}
-			}
-		})
+	_, _, err := ParsePRURL("https://bitbucket.org/blgtech/hrms/pull-requests/371")
+	if err == nil {
+		t.Error("expected error parsing Bitbucket URL without registered provider")
+	} else {
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "unsupported or unrecognized PR URL") {
+			t.Errorf("expected 'unsupported or unrecognized PR URL' in error, got: %v", err)
+		}
+		if !strings.Contains(errMsg, "GitHub") || !strings.Contains(errMsg, "Bitbucket") {
+			t.Errorf("expected error to mention GitHub and Bitbucket, got: %v", err)
+		}
+		if strings.Contains(errMsg, "lstat") || strings.Contains(errMsg, "no such file or directory") {
+			t.Errorf("error should not mention filesystem paths, got: %v", err)
+		}
 	}
 }
 
@@ -409,7 +290,7 @@ func TestPRSessionPullFastForwardAndDiverge(t *testing.T) {
 	gitTestRun(t, srcRepo, "push", "origin", "feature:refs/pull/99/head")
 	gitTestRun(t, srcRepo, "checkout", "-q", "main")
 
-	info, err := p.Pull(context.Background())
+	info, err := p.Pull()
 	if err != nil {
 		t.Fatalf("expected a clean fast-forward Pull, got %v", err)
 	}
@@ -438,7 +319,7 @@ func TestPRSessionPullFastForwardAndDiverge(t *testing.T) {
 	gitTestRun(t, srcRepo, "push", "origin", "feature:refs/pull/99/head")
 	gitTestRun(t, srcRepo, "checkout", "-q", "main")
 
-	if _, err := p.Pull(context.Background()); !errors.Is(err, errPRDiverged) {
+	if _, err := p.Pull(); !errors.Is(err, errPRDiverged) {
 		t.Fatalf("expected errPRDiverged, got %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(worktree, "feature.txt")); err != nil || string(got) != "local edit\n" {
@@ -482,7 +363,7 @@ func TestPRSessionPush(t *testing.T) {
 		target:   PRTarget{Owner: "o", Repo: "r"},
 		meta:     PRMeta{Number: 1, HeadRef: "feature/pr-1", HeadRepoCloneURL: upstream},
 	}
-	if err := p.Push(context.Background()); err != nil {
+	if err := p.Push(); err != nil {
 		t.Fatalf("Push failed: %v", err)
 	}
 
@@ -814,7 +695,7 @@ func TestSSH_U2_EmptyHeadRepoCloneURLFallback(t *testing.T) {
 		meta:     PRMeta{HeadRepoCloneURL: "", HeadRef: "main"},
 		worktree: t.TempDir(),
 	}
-	err := p.Push(context.Background())
+	err := p.Push()
 	if err == nil {
 		t.Fatal("expected push to fail on empty/uninitialized worktree")
 	}
@@ -822,7 +703,7 @@ func TestSSH_U2_EmptyHeadRepoCloneURLFallback(t *testing.T) {
 		t.Errorf("push should not use https: %v", err)
 	}
 
-	diffBase, diffBaseWarning := computeDiffBase(context.Background(), gp, t.TempDir(), "", target, "", "main", 1, nil)
+	diffBase, diffBaseWarning := computeDiffBase(gp, t.TempDir(), "", target, "", "main", 1, nil)
 	if diffBase != "HEAD" {
 		t.Errorf("diffBase = %q, want HEAD on failed fetch", diffBase)
 	}
@@ -865,7 +746,7 @@ func TestPush_U2_HTTPSRewriteWithToken(t *testing.T) {
 			token:    "dummy-token",
 			provider: &GitHubProvider{},
 		}
-		err := p.Push(context.Background())
+		err := p.Push()
 		if err == nil {
 			t.Fatalf("expected push to fail for %s", sshURL)
 		}
@@ -883,7 +764,7 @@ func TestSSH_U2_NoKeyFailsFastMentionsSSHNotToken(t *testing.T) {
 		t.Skip("git not installed")
 	}
 
-	cmd := gitAuthCmd(context.Background(), "", "ls-remote", "git@nonexistent.invalid:owner/repo.git")
+	cmd := gitSSHCmd("ls-remote", "git@nonexistent.invalid:owner/repo.git")
 	emptyHome := t.TempDir()
 	cmd.Env = append(cmd.Env, "HOME="+emptyHome, "GIT_SSH_COMMAND=ssh -o BatchMode=yes")
 
@@ -931,7 +812,7 @@ func TestSSH_U2_GitHubTokenDoesNotChangeGitAuthCmdEnv(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_secret_token_123456789")
 
 	// With no token parameter: no extraheader should be set.
-	cmdNoToken := gitAuthCmd(context.Background(), "", "status")
+	cmdNoToken := gitAuthCmd("", "status")
 	for _, env := range cmdNoToken.Env {
 		if strings.Contains(env, "extraheader") {
 			t.Errorf("cmdNoToken.Env contains extraheader: %s", env)
@@ -940,7 +821,7 @@ func TestSSH_U2_GitHubTokenDoesNotChangeGitAuthCmdEnv(t *testing.T) {
 
 	// With a token parameter: the extraheader must be set.
 	token := "my-test-token"
-	cmdWithToken := gitAuthCmd(context.Background(), token, "status")
+	cmdWithToken := gitAuthCmd(token, "status")
 	var hasExtraheader, hasExpectedAuth bool
 	wantAuth := "Authorization: Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+token))
 	for _, env := range cmdWithToken.Env {
@@ -1014,7 +895,7 @@ func TestPRSessionPullFollowsForcePush(t *testing.T) {
 	gitTestRun(t, work, "commit", "-aqm", "one (amended)", "--amend")
 	gitTestRun(t, work, "push", "-qf", upstream, "feature")
 
-	if _, err := p.Pull(context.Background()); err != nil {
+	if _, err := p.Pull(); err != nil {
 		t.Fatalf("Pull should follow a force-push when nothing local is at stake: %v", err)
 	}
 	if got, _ := os.ReadFile(filepath.Join(wt, "f.txt")); string(got) != "rewritten\n" {
@@ -1030,7 +911,7 @@ func TestPRSessionPullFollowsForcePush(t *testing.T) {
 	os.WriteFile(filepath.Join(work, "f.txt"), []byte("rewritten again\n"), 0o644)
 	gitTestRun(t, work, "commit", "-aqm", "again", "--amend")
 	gitTestRun(t, work, "push", "-qf", upstream, "feature")
-	if _, err := p.Pull(context.Background()); !errors.Is(err, errPRDiverged) {
+	if _, err := p.Pull(); !errors.Is(err, errPRDiverged) {
 		t.Fatalf("expected errPRDiverged with a local commit, got %v", err)
 	}
 }
@@ -1551,7 +1432,7 @@ func TestBitbucket_CheckoutAndPullInLocalClone(t *testing.T) {
 	gitTestRun(t, seedClone, "push", "origin", "bugs/leave")
 	newHeadSHA := strings.TrimSpace(gitTestRun(t, seedClone, "rev-parse", "HEAD"))
 
-	info, err := sess.Pull(context.Background())
+	info, err := sess.Pull()
 	if err != nil {
 		t.Fatalf("sess.Pull() failed: %v", err)
 	}
@@ -1584,7 +1465,7 @@ func TestGitSSHCmdSanitization(t *testing.T) {
 	os.Setenv("GIT_SSH_COMMAND", "ssh -i /path/to/key -o CustomPrompt=yes")
 	os.Setenv("GIT_TERMINAL_PROMPT", "1")
 
-	cmd := gitSSHCmd(context.Background(), "status")
+	cmd := gitSSHCmd("status")
 	var sshCmds []string
 	var promptVals []string
 	for _, env := range cmd.Env {
@@ -1604,71 +1485,6 @@ func TestGitSSHCmdSanitization(t *testing.T) {
 	}
 	if len(promptVals) != 1 || promptVals[0] != "GIT_TERMINAL_PROMPT=0" {
 		t.Errorf("expected exactly 1 GIT_TERMINAL_PROMPT=0, got: %v", promptVals)
-	}
-}
-
-// U4: A cancelled context terminates a git command and returns an error promptly.
-func TestGitSubprocessContextCancellation(t *testing.T) {
-	if !gitInstalled() {
-		t.Skip("git not installed")
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // pre-cancelled
-
-	cmd := gitAuthCmd(ctx, "", "fetch", "https://example.com/repo.git")
-	err := cmd.Run()
-	if err == nil {
-		t.Fatal("expected error with cancelled context")
-	}
-	if !errors.Is(ctx.Err(), context.Canceled) {
-		t.Fatalf("expected context.Canceled, got %v", ctx.Err())
-	}
-
-	cmdSSH := gitSSHCmd(ctx, "fetch", "git@example.com:o/r.git")
-	errSSH := cmdSSH.Run()
-	if errSSH == nil {
-		t.Fatal("expected error with cancelled context")
-	}
-}
-
-// U4: A live context lets a normal git call finish.
-func TestGitSubprocessLiveContext(t *testing.T) {
-	if !gitInstalled() {
-		t.Skip("git not installed")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	cmd := gitAuthCmd(ctx, "", "version")
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("expected git version to succeed, got %v", err)
-	}
-	if !strings.Contains(string(out), "git version") {
-		t.Fatalf("unexpected git version output: %s", string(out))
-	}
-}
-
-// U4: Pull and Push terminate when context is cancelled.
-func TestPRSessionPullPushCancelledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // pre-cancelled
-
-	p := &prSession{
-		worktree: t.TempDir(),
-		target:   PRTarget{Owner: "o", Repo: "r"},
-		meta:     PRMeta{HeadRepoCloneURL: "https://example.com/repo.git", HeadRef: "main"},
-		provider: &GitHubProvider{},
-	}
-
-	err := p.Push(ctx)
-	if err == nil {
-		t.Fatal("expected Push to fail on cancelled context")
-	}
-
-	_, err = p.Pull(ctx)
-	if err == nil {
-		t.Fatal("expected Pull to fail on cancelled context")
 	}
 }
 
@@ -1714,7 +1530,7 @@ func TestGitRunStepNoTokenRunsSSHOnly(t *testing.T) {
 	provider := &GitHubProvider{}
 	target := PRTarget{Owner: "owner", Repo: "repo"}
 
-	_, err := gitRunStep(context.Background(), provider, target, "", "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+	_, err := gitRunStep(provider, target, "", "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
 		triedRemotes = append(triedRemotes, remote)
 		return []string{"version"}
 	})
@@ -1736,7 +1552,7 @@ func TestGitRunStepTokenHTTPSFirstFallbackSSH(t *testing.T) {
 
 	// When HTTPS succeeds, SSH should NOT be attempted.
 	triedRemotes = nil
-	_, err := gitRunStep(context.Background(), provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+	_, err := gitRunStep(provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
 		triedRemotes = append(triedRemotes, remote)
 		return []string{"version"}
 	})
@@ -1749,7 +1565,7 @@ func TestGitRunStepTokenHTTPSFirstFallbackSSH(t *testing.T) {
 
 	// When HTTPS fails, it falls back to SSH.
 	triedRemotes = nil
-	_, err = gitRunStep(context.Background(), provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
+	_, err = gitRunStep(provider, target, token, "https://github.com/owner/repo.git", "git@github.com:owner/repo.git", func(remote string) []string {
 		triedRemotes = append(triedRemotes, remote)
 		if remote == "https://github.com/owner/repo.git" {
 			// Fail HTTPS attempt with token in error
@@ -1779,7 +1595,7 @@ func TestGitRunStepBitbucketIsSSHOnly(t *testing.T) {
 	provider := &BitbucketProvider{}
 	target := PRTarget{Provider: "bitbucket", Owner: "owner", Repo: "repo"}
 
-	_, err := gitRunStep(context.Background(), provider, target, "my-bb-token", "https://bitbucket.org/owner/repo.git", "git@bitbucket.org:owner/repo.git", func(remote string) []string {
+	_, err := gitRunStep(provider, target, "my-bb-token", "https://bitbucket.org/owner/repo.git", "git@bitbucket.org:owner/repo.git", func(remote string) []string {
 		triedRemotes = append(triedRemotes, remote)
 		return []string{"version"}
 	})

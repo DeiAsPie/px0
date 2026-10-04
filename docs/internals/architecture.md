@@ -214,6 +214,6 @@ Before `px0 --update` executes or installs a release binary, it verifies the dow
 
 When launched with a pull request URL (`px0 https://github.com/...` or `px0 https://bitbucket.org/...`), px0 initializes a dedicated review session backed by the `GitProvider` interface (`GitHubProvider`, `BitbucketProvider`):
 
-- **Non-Interactive Git Transport**: All git subprocess operations (fetching head/base refs, checkout into temporary worktrees, pulling updates) use non-interactive SSH transport (`GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND=ssh -o BatchMode=yes`). Host environment variables that could permit interactive prompts or leak tokens (`GIT_SSH_COMMAND`, `GIT_TERMINAL_PROMPT`, `GITHUB_TOKEN`, `BITBUCKET_TOKEN`) are filtered before invoking git.
+- **Non-Interactive Git Transport**: Git subprocess operations configured for SSH use non-interactive transport (`GIT_TERMINAL_PROMPT=0` and `GIT_SSH_COMMAND=ssh -o BatchMode=yes`) to fail fast instead of hanging on terminal prompts.
 - **Fail-Closed Permissions**: Review submission privileges (Approve, Request Changes) verify push permissions against provider APIs and fail closed on transport errors, HTTP 401/403, or invalid responses.
 - **Transport Security & SSRF Protection**: Outbound provider API requests enforce HTTPS and strict hostname allowlisting (`api.bitbucket.org`, `api.github.com`), sanitizing error messages to prevent credential leakage.

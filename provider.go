@@ -129,11 +129,6 @@ func RegisterProvider(p GitProvider) {
 	defaultProviders = append(defaultProviders, p)
 }
 
-// IsURL reports whether raw appears to be a URL (contains "://").
-func IsURL(raw string) bool {
-	return strings.Contains(raw, "://")
-}
-
 // DetectPRURL checks if rawURL is a recognized pull request URL for any supported provider.
 // If matched and valid, returns the matching provider, parsed target, and true.
 func DetectPRURL(rawURL string) (GitProvider, PRTarget, bool) {

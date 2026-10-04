@@ -145,8 +145,6 @@ function renderBar() {
   const appBtn = $('#pr-submit-approve');
   if (reqBtn) reqBtn.hidden = !meta.writeAccess;
   if (appBtn) appBtn.hidden = !meta.writeAccess;
-  const waNote = $('#pr-write-access-note');
-  if (waNote) waNote.hidden = !!meta.writeAccess || !!meta.readOnly;
   const cmtBtn = $('#pr-submit-comment');
   if (cmtBtn) {
     cmtBtn.disabled = false;
