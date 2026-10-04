@@ -511,6 +511,7 @@ func (b *BitbucketProvider) FetchComments(ctx context.Context, target PRTarget, 
 		}
 	}
 
+	// O(n^2) in comment count; acceptable at current volumes and bounded by bitbucketMaxCommentPages.
 	for i := 0; i < len(all); i++ {
 		for _, c := range all {
 			if !isReviewMap[c.ID] && c.Parent != nil && isReviewMap[c.Parent.ID] {
@@ -649,7 +650,9 @@ func (b *BitbucketProvider) ReplyToReviewComment(ctx context.Context, target PRT
 		prc.InReplyTo = commentID
 	}
 
-	// Inherit path, line, and side from parent comment so UI threads it correctly
+	// The reply is already posted and threaded server-side via parent.id (from the POST above).
+	// This GET is best-effort display enrichment of Path/Line/Side on the returned PRComment.
+	// A failure must not return an error, because the caller would retry and post a duplicate reply.
 	parentPath := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/comments/%d", target.Owner, target.Repo, target.Number, commentID)
 	if parentResp, err := bitbucketRequest(ctx, http.MethodGet, parentPath, token, nil); err == nil {
 		if parentResp.StatusCode == http.StatusOK {
