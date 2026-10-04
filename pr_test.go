@@ -1727,3 +1727,69 @@ func TestBitbucket_CheckoutDeletedSourceBranchFallbackToHeadSHA(t *testing.T) {
 		t.Errorf("sess.meta.HeadSHA = %q, want %q", sess.meta.HeadSHA, headSHA)
 	}
 }
+
+// TestGitRunStepFallsBackToSSHAfterHTTPS tests that gitRunStep with a non-Bitbucket
+// provider first tries HTTPS with the provided token, then falls back to SSH when
+// HTTPS fails. A closure records which remotes were attempted.
+func TestGitRunStepFallsBackToSSHAfterHTTPS(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+
+	base := t.TempDir()
+	missingPath := filepath.Join(base, "nonexistent.git")
+	bareRepo := filepath.Join(base, "bare.git")
+
+	if err := os.MkdirAll(bareRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, bareRepo, "init", "--bare")
+
+	var recorded []string
+	makeArgs := func(remote string) []string {
+		recorded = append(recorded, remote)
+		return []string{"ls-remote", remote}
+	}
+
+	_, err := gitRunStep(&mockSSHProvider{}, PRTarget{}, "tok", missingPath, bareRepo, makeArgs)
+	if err != nil {
+		t.Fatalf("gitRunStep failed: %v", err)
+	}
+
+	if len(recorded) != 2 || recorded[0] != missingPath || recorded[1] != bareRepo {
+		t.Errorf("gitRunStep recorded remotes = %v, want [%s, %s]", recorded, missingPath, bareRepo)
+	}
+}
+
+// TestGitRunStepBitbucketSkipsHTTPS tests that gitRunStep with BitbucketProvider
+// skips the HTTPS attempt entirely and tries SSH directly, even with a token provided.
+// A closure records which remotes were attempted.
+func TestGitRunStepBitbucketSkipsHTTPS(t *testing.T) {
+	if !gitInstalled() {
+		t.Skip("git not installed")
+	}
+
+	base := t.TempDir()
+	bareRepo := filepath.Join(base, "bare.git")
+	missingPath := filepath.Join(base, "nonexistent.git")
+
+	if err := os.MkdirAll(bareRepo, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitTestRun(t, bareRepo, "init", "--bare")
+
+	var recorded []string
+	makeArgs := func(remote string) []string {
+		recorded = append(recorded, remote)
+		return []string{"ls-remote", remote}
+	}
+
+	_, err := gitRunStep(&BitbucketProvider{}, PRTarget{}, "tok", bareRepo, missingPath, makeArgs)
+	if err == nil {
+		t.Fatalf("gitRunStep should fail with non-existent SSH remote")
+	}
+
+	if len(recorded) != 1 || recorded[0] != missingPath {
+		t.Errorf("gitRunStep recorded remotes = %v, want [%s]", recorded, missingPath)
+	}
+}
