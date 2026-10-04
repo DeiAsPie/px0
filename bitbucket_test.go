@@ -1010,6 +1010,50 @@ func TestBitbucketFetchComments(t *testing.T) {
 	}
 }
 
+func TestBitbucketFetchCommentsPaginationCap(t *testing.T) {
+	orig := bitbucketHTTPClient.Transport
+	defer func() { bitbucketHTTPClient.Transport = orig }()
+
+	p := &BitbucketProvider{}
+	ctx := context.Background()
+	target := PRTarget{Provider: "bitbucket", Owner: "myws", Repo: "myrepo", Number: 42}
+
+	var requestCount int
+	bitbucketHTTPClient.Transport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requestCount++
+		// Always return a next URL to simulate infinite pagination
+		body := `{
+			"next": "https://api.bitbucket.org/2.0/repositories/myws/myrepo/pullrequests/42/comments?page=` + fmt.Sprintf("%d", requestCount+1) + `",
+			"values": [
+				{
+					"id": ` + fmt.Sprintf("%d", requestCount) + `,
+					"deleted": false,
+					"created_on": "2026-10-01T10:00:00Z",
+					"content": { "raw": "comment" },
+					"user": { "nickname": "reviewer", "links": { "avatar": { "href": "https://avatar/x" } } },
+					"links": { "html": { "href": "https://bitbucket.org/myws/myrepo/pull-requests/42#comment-1" } }
+				}
+			]
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Header:     make(http.Header),
+		}, nil
+	})
+
+	_, _, err := p.FetchComments(ctx, target, "test-token")
+	if err == nil {
+		t.Error("FetchComments should return error when pagination cap exceeded")
+	}
+	if !strings.Contains(err.Error(), "exceeded") {
+		t.Errorf("error message should contain 'exceeded', got: %v", err)
+	}
+	if requestCount != 100 {
+		t.Errorf("expected exactly 100 requests, got %d", requestCount)
+	}
+}
+
 func TestBitbucketHTTPErrorHelper(t *testing.T) {
 	secretToken := "secret_token_12345"
 	userPassToken := "myuser:super_secret_pw_999"

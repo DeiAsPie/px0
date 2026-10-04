@@ -458,11 +458,16 @@ func (b *BitbucketProvider) SubmitReview(ctx context.Context, target PRTarget, t
 	return nil
 }
 
+const bitbucketMaxCommentPages = 100
+
 func (b *BitbucketProvider) FetchComments(ctx context.Context, target PRTarget, token string) ([]PRComment, []PRComment, error) {
 	nextURL := fmt.Sprintf("/repositories/%s/%s/pullrequests/%d/comments", target.Owner, target.Repo, target.Number)
 
 	var all []bitbucketCommentItem
-	for nextURL != "" {
+	for pages := 0; nextURL != ""; pages++ {
+		if pages >= bitbucketMaxCommentPages {
+			return nil, nil, fmt.Errorf("bitbucket: fetch comments: exceeded %d pages", bitbucketMaxCommentPages)
+		}
 		resp, err := bitbucketRequest(ctx, http.MethodGet, nextURL, token, nil)
 		if err != nil {
 			return nil, nil, fmt.Errorf("bitbucket: fetch comments: %w", err)
